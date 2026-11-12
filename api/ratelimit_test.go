@@ -115,3 +115,54 @@ func TestCheckout(t *testing.T) {
 		t.Fatalf("no customer: %v, want ErrNoCustomer", err)
 	}
 }
+
+func TestLimiterRejectedRequestsDoNotExtendLockout(t *testing.T) {
+	l, c := newTestLimiter()
+	for i := 0; i < 10; i++ {
+		l.Allow("bot")
+	}
+	// Bot keeps hammering through the window.
+	for i := 0; i < 59; i++ {
+		c.advance(time.Second)
+		if l.Allow("bot") {
+			t.Fatalf("allowed at +%ds", i+1)
+		}
+	}
+	c.advance(time.Second)
+	if !l.Allow("bot") {
+		t.Fatal("rejected requests extended the lockout")
+	}
+}
+
+func TestLimiterSweepKeepsActiveCustomers(t *testing.T) {
+	l, c := newTestLimiter()
+	l.Allow("alice") // first call sweeps at t0
+	c.advance(30 * time.Second)
+	for i := 0; i < 9; i++ {
+		l.Allow("bob")
+	}
+	c.advance(31 * time.Second) // next call sweeps; bob's hits still in window
+	l.Allow("carol")
+	if !l.Allow("bob") {
+		t.Fatal("bob's 10th request rejected")
+	}
+	if l.Allow("bob") {
+		t.Fatal("sweep dropped bob's in-window history")
+	}
+}
+
+func TestCheckoutUsesDefaultLimiter(t *testing.T) {
+	orig := checkoutLimiter
+	checkoutLimiter = NewLimiter(DefaultCheckoutLimit, DefaultCheckoutWindow)
+	t.Cleanup(func() { checkoutLimiter = orig })
+
+	const customer = "alice"
+	for i := 0; i < DefaultCheckoutLimit; i++ {
+		if err := Checkout(&Order{ID: "o", Customer: customer}); err != nil {
+			t.Fatalf("checkout %d: %v", i+1, err)
+		}
+	}
+	if err := Checkout(&Order{ID: "o", Customer: customer}); err != ErrRateLimited {
+		t.Fatalf("checkout over limit: %v, want ErrRateLimited", err)
+	}
+}
