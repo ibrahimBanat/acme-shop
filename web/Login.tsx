@@ -1,5 +1,11 @@
 import { useRef, useState, type FormEvent } from "react";
-import { login as defaultLogin, type FieldErrors, type LoginRequest, type LoginResult } from "./auth/api";
+import {
+  GENERIC_ERROR_MESSAGE,
+  login as defaultLogin,
+  type FieldErrors,
+  type LoginRequest,
+  type LoginResult,
+} from "./auth/api";
 
 export const IDENTIFIER_REQUIRED = "Email or username is required.";
 export const PASSWORD_REQUIRED = "Password is required.";
@@ -40,18 +46,21 @@ export function Login({ onSuccess = redirectToDashboard, login = defaultLogin }:
 
     inFlight.current = true;
     setSubmitting(true);
+    let result: LoginResult;
     try {
-      const result = await login({ identifier: trimmedIdentifier, password, rememberMe });
-      if (result.ok) {
-        onSuccess();
-        return;
-      }
-      if (result.kind === "validation") setFieldErrors(result.fieldErrors);
-      setFormError(result.message);
-    } finally {
-      inFlight.current = false;
-      setSubmitting(false);
+      result = await login({ identifier: trimmedIdentifier, password, rememberMe });
+    } catch {
+      result = { ok: false, kind: "error", message: GENERIC_ERROR_MESSAGE };
     }
+    if (result.ok) {
+      // Stay disabled while the redirect happens so the form can't be resubmitted.
+      onSuccess();
+      return;
+    }
+    if (result.kind === "validation") setFieldErrors(result.fieldErrors);
+    setFormError(result.message);
+    inFlight.current = false;
+    setSubmitting(false);
   }
 
   return (

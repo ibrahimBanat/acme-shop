@@ -126,6 +126,28 @@ describe("Login", () => {
     await vi.waitFor(() => expect(onSuccess).toHaveBeenCalledTimes(1));
   });
 
+  it("AC7: keeps Login disabled after success while redirecting", async () => {
+    const { login, user, identifier, password, submit } = setup();
+    await user.type(identifier, "jane");
+    await user.type(password, "s3cret");
+    await user.click(submit);
+    expect(submit).toBeDisabled();
+    await user.keyboard("{Enter}");
+    expect(login).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a generic error if the login call throws", async () => {
+    const { onSuccess, user, identifier, password, submit } = setup(async () => {
+      throw new Error("boom");
+    });
+    await user.type(identifier, "jane");
+    await user.type(password, "s3cret");
+    await user.click(submit);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong");
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(submit).toBeEnabled();
+  });
+
   it("offers a Forgot Password link", () => {
     setup();
     expect(screen.getByRole("link", { name: "Forgot password?" })).toHaveAttribute("href", "/forgot-password");
