@@ -59,3 +59,35 @@ func TestRefundReasonValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestRefundErrorsDoNotLeakReason(t *testing.T) {
+	// The reason may contain personal data; errors must not echo it.
+	pii := "jane.doe@example.com " + strings.Repeat("x", 200)
+	o := &Order{ID: "o1", TotalUSD: 40, Status: "paid"}
+	err := Refund(o, 40, pii)
+	if !errors.Is(err, ErrReasonTooLong) {
+		t.Fatalf("err = %v, want ErrReasonTooLong", err)
+	}
+	if strings.Contains(err.Error(), "jane.doe") {
+		t.Fatalf("error leaks reason: %q", err)
+	}
+
+	o = &Order{ID: "o2", TotalUSD: 40, Status: "refunded", RefundReason: "first"}
+	err = Refund(o, 40, "jane.doe@example.com asked again")
+	if !errors.Is(err, ErrAlreadyRefunded) {
+		t.Fatalf("err = %v, want ErrAlreadyRefunded", err)
+	}
+	if strings.Contains(err.Error(), "jane.doe") {
+		t.Fatalf("error leaks reason: %q", err)
+	}
+}
+
+func TestRefundInvalidReasonOnRefundedOrder(t *testing.T) {
+	o := &Order{ID: "o1", TotalUSD: 40, Status: "refunded", RefundReason: "first"}
+	if err := Refund(o, 40, ""); !errors.Is(err, ErrReasonRequired) {
+		t.Fatalf("err = %v, want ErrReasonRequired", err)
+	}
+	if o.RefundReason != "first" {
+		t.Fatalf("reason changed: %q", o.RefundReason)
+	}
+}
