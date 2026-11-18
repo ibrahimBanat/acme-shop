@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -156,5 +157,83 @@ func TestRateLimitMiddleware(t *testing.T) {
 	}
 	if rec := do(""); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("anon 11th: status %d, want 429", rec.Code)
+	}
+}
+
+func TestRateLimiterRetryAfterShrinks(t *testing.T) {
+	l, c := newTestLimiter()
+	for i := 0; i < 10; i++ {
+		l.Allow("alice")
+	}
+	c.advance(45 * time.Second)
+	wait, err := l.Allow("alice")
+	if err != ErrRateLimited {
+		t.Fatalf("got %v, want ErrRateLimited", err)
+	}
+	if wait != 15*time.Second {
+		t.Fatalf("retry after: got %v, want 15s", wait)
+	}
+}
+
+func TestRateLimiterExactBoundary(t *testing.T) {
+	l, c := newTestLimiter()
+	for i := 0; i < 10; i++ {
+		l.Allow("alice")
+	}
+	c.advance(time.Minute) // first requests are exactly one window old
+	if _, err := l.Allow("alice"); err != nil {
+		t.Fatalf("at exactly 60s: %v", err)
+	}
+}
+
+func TestRateLimitMiddlewareRetryAfterRoundsUp(t *testing.T) {
+	l, c := newTestLimiter()
+	h := RateLimitMiddleware(l, func(*http.Request) string { return "alice" },
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	for i := 0; i < 10; i++ {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/checkout", nil))
+	}
+	c.advance(59*time.Second + 500*time.Millisecond) // 0.5s left
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/checkout", nil))
+	if got := rec.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After: got %q, want 1", got)
+	}
+}
+
+func TestRateLimitMiddlewareKeys(t *testing.T) {
+	l, _ := newTestLimiter()
+	h := RateLimitMiddleware(l, func(r *http.Request) string {
+		return r.Header.Get("X-Customer-ID")
+	}, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	do := func(customer, remote string) int {
+		req := httptest.NewRequest(http.MethodPost, "/checkout", nil)
+		req.RemoteAddr = remote
+		if customer != "" {
+			req.Header.Set("X-Customer-ID", customer)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// Exhaust anonymous budget for 1.2.3.4 (port varies per connection).
+	for i := 0; i < 10; i++ {
+		do("", "1.2.3.4:"+strconv.Itoa(1000+i))
+	}
+	if code := do("", "1.2.3.4:9999"); code != http.StatusTooManyRequests {
+		t.Fatalf("same IP, new port: status %d, want 429", code)
+	}
+	if code := do("", "5.6.7.8:1000"); code != http.StatusOK {
+		t.Fatalf("other IP: status %d, want 200", code)
+	}
+	// A customer ID that looks like the IP key must not share its budget.
+	if code := do("ip:1.2.3.4", "9.9.9.9:1"); code != http.StatusOK {
+		t.Fatalf("customer named like IP key: status %d, want 200", code)
+	}
+	// RemoteAddr without a port still works.
+	if code := do("", "10.0.0.1"); code != http.StatusOK {
+		t.Fatalf("portless RemoteAddr: status %d, want 200", code)
 	}
 }
